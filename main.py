@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 import discord
 from discord.commands import Option
 from discord.ext import commands
@@ -7,11 +8,15 @@ import math
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
-from keep_alive import keep_alive
 
-keep_alive()
+# keep_alive.py を利用している場合は、このファイルもプロジェクトに含めてください
+# from keep_alive import keep_alive
+# keep_alive()
+
 # ---------------- 定数・パラメータ設定 ----------------
+load_dotenv()
 
+# 環境変数からトークンを読み込む
 BOT_TOKEN = os.getenv("DISCORD_TOKEN") 
 
 RANK_TO_MMR = {
@@ -102,7 +107,13 @@ def balance_multiple_teams(players: List[Player]) -> Tuple[List[List[Player]], L
 
 # ---------------- Discordボット本体 ----------------
 
-bot = discord.Bot()
+# ▼▼▼【この3行を追加・変更】▼▼▼
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+
+bot = discord.Bot(intents=intents)
+# ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
 @bot.event
 async def on_ready():
@@ -210,53 +221,52 @@ async def clear_entries(ctx: discord.ApplicationContext):
     entry_list.clear()
     await ctx.respond("✅ エントリーリストをリセットしました。", ephemeral=True)
 
-## NEW ##
 @bot.slash_command(name="help", description="BOTのコマンド一覧と使い方を表示します。")
 async def help(ctx: discord.ApplicationContext):
     embed = discord.Embed(title=" LoLカスタムチーム分けBOT ヘルプ", description="このBOTで利用できるコマンドの一覧です。", color=discord.Color.og_blurple())
-    
-    embed.add_field(
-        name="【👤 参加者向けコマンド】",
-        value=(
-            f"`/entry` `rank:<ランク>` `role:<ロール>`\n"
-            "カスタムに参加登録します。ランク入力時には候補が表示されます。\n\n"
-            f"`/withdraw`\n"
-            "カスタムへの参加登録を取り下げます。\n\n"
-            f"`/status`\n"
-            "現在のエントリー状況（参加者一覧、ロール状況）を確認します。\n\n"
-            f"`/help`\n"
-            "このヘルプメッセージを表示します。"
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="【👑 管理者向けコマンド】",
-        value=(
-            f"`/divide_teams`\n"
-            "現在エントリーしているメンバーで、チーム分けを実行します。\n\n"
-            f"`/clear_entries`\n"
-            "すべてのエントリー情報をリセットします。"
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="【🧪 テスト用コマンド】",
-        value=(
-            f"`/debug` `count:<人数>`\n"
-            "テスト用のダミー参加者データを生成します。"
-        ),
-        inline=False
-    )
-    
+    embed.add_field(name="【👤 参加者向けコマンド】", value=f"`/entry` `rank:<ランク>` `role:<ロール>`\nカスタムに参加登録します。ランク入力時には候補が表示されます。\n\n`/withdraw`\nカスタムへの参加登録を取り下げます。\n\n`/status`\n現在のエントリー状況（参加者一覧、ロール状況）を確認します。\n\n`/help`\nこのヘルプメッセージを表示します。", inline=False)
+    embed.add_field(name="【👑 管理者向けコマンド】", value=f"`/divide_teams`\n現在エントリーしているメンバーで、チーム分けを実行します。\n\n`/clear_entries`\nすべてのエントリー情報をリセットします。", inline=False)
+    embed.add_field(name="【🧪 テスト用コマンド】", value=f"`/debug` `count:<人数>`\n指定した人数のダミープレイヤーを自動で参加登録させます。", inline=False)
     embed.set_footer(text="困ったときはこのコマンドを実行してください。")
     await ctx.respond(embed=embed)
 
+@bot.slash_command(name="debug", description="指定した人数のダミープレイヤーを自動で参加登録させます。")
+@commands.has_permissions(administrator=True)
+async def debug(ctx: discord.ApplicationContext, count: Option(int, "登録する人数", required=True, min_value=1, max_value=50)):
+    DUMMY_NAMES = ["Ashe","Garen","Lux","Darius","Jinx","Yasuo","Zed","Akali","Teemo","LeeSin","Ahri","Ezreal","Katarina","Riven","Vayne","Thresh","Blitzcrank","Morgana","Yi","Fiora","Irelia","Jax","Malphite","Nasus","Veigar","Annie","Brand","Caitlyn","Jhin","Soraka","Lulu","Nami","Leona","Alistar","Amumu","Chogath","Ekko","Fizz","Graves","Heimerdinger","Kayn","Khazix","Kindred","Lucian","MissFortune","Nocturne","Olaf","Pyke","Quinn","Rengar","Shaco","Sion","Sivir"]
+    
+    existing_names = {p.name for p in entry_list.values()}
+    available_names = [name for name in DUMMY_NAMES if name not in existing_names]
+    
+    if count > len(available_names):
+        # deferの後はfollowupで ephemeral なメッセージを送る
+        await ctx.followup.send(f"エラー: 追加できるダミープレイヤーの上限は {len(available_names)} 人です。（名前の重複を避けるため）", ephemeral=True)
+        return
+        
+    names_to_add = random.sample(available_names, count)
+    ranks = list(RANK_TO_MMR.keys())
+    
+    added_players_text = []
 
-# ---------------- デバッグ用コマンド (変更なし) ----------------
-# (省略... 前回のdebugコマンドのコードをここにコピーしてください)
+    for i in range(count):
+        name = names_to_add[i]
+        user_id = -random.randint(10000, 99999)
+        rank = random.choice(ranks)
+        role = random.choice(ENTRY_LANES)
+        
+        player = Player(id=user_id, name=name, rank=rank, role=role, mmr=RANK_TO_MMR[rank])
+        entry_list[user_id] = player
+        added_players_text.append(f"`{name}` ({rank} / {role})")
 
-
+    embed = discord.Embed(
+        title=f"🧪 デバッグ: {count}人のダミープレイヤーを登録しました",
+        description="\n".join(added_players_text),
+        color=discord.Color.orange()
+    )
+    
+    await ctx.response.send_message(embed=embed)
 # ボットの実行
-bot.run(BOT_TOKEN)
+if BOT_TOKEN:
+    bot.run(BOT_TOKEN)
+else:
+    print("エラー:環境変数 DISCORD_TOKEN が設定されていません。")
