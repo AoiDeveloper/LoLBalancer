@@ -68,42 +68,106 @@ def calculate_multi_team_score(teams: List[List[Player]], all_players: List[Play
     e_top_std = np.std(top_player_distribution)
     score = (W_MMR_STD * e_mmr_std) + (W_LANE_DIV * e_lane_diversity) + (W_TOP_STD * e_top_std)
     return score
-def balance_multiple_teams(players: List[Player]) -> Tuple[List[List[Player]], List[Player], float]:
-    num_teams = len(players) // 5
-    num_remains = len(players) % 5
-    if num_teams == 0: return [], players, 0.0
-    random.shuffle(players)
-    team_members = players[:-num_remains] if num_remains > 0 else players
-    current_remains = players[-num_remains:] if num_remains > 0 else []
-    current_teams = [team_members[i:i+5] for i in range(0, len(team_members), 5)]
-    best_teams, best_remains = current_teams, current_remains
-    current_score = calculate_multi_team_score(current_teams, players)
-    best_score = current_score
-    temp = INITIAL_TEMP
-    for i in range(MAX_ITERATIONS):
-        if temp <= 0.01: break
-        new_teams = [list(team) for team in current_teams]
-        new_remains = list(current_remains)
-        if num_remains > 0 and random.random() < 0.3:
-            team_idx, player_idx_in_team, remain_idx = random.randint(0, num_teams - 1), random.randint(0, 4), random.randint(0, num_remains - 1)
-            new_teams[team_idx][player_idx_in_team], new_remains[remain_idx] = new_remains[remain_idx], new_teams[team_idx][player_idx_in_team]
-        else:
-            if num_teams < 2: continue
-            t1_idx, t2_idx = random.sample(range(num_teams), 2)
-            p1_idx, p2_idx = random.randint(0, 4), random.randint(0, 4)
-            new_teams[t1_idx][p1_idx], new_teams[t2_idx][p2_idx] = new_teams[t2_idx][p2_idx], new_teams[t1_idx][p1_idx]
-        new_score = calculate_multi_team_score(new_teams, players)
-        delta = new_score - current_score
-        if delta < 0 or random.random() < math.exp(-delta / temp):
-            current_teams, current_remains = new_teams, new_remains
-            current_score = new_score
-            if current_score < best_score:
-                best_score = current_score
-                best_teams, best_remains = current_teams, current_remains
-        temp *= COOLING_RATE
-    return best_teams, best_remains, best_score
-# -----------------------------------------------------------
+# ----------------- チーム分けアルゴリズム（フィルなし・厳格ロール版） -----------------
 
+# ▼▼▼【変更】チーム分けアルゴリズム本体を、フィルしないロジックに全面変更▼▼▼
+def balance_multiple_teams(players: List[Player]) -> Tuple[List[List[Player]], List[Player], float]:
+    """
+    焼きなまし法を用いて、ロールを各1人ずつ揃えたチームを編成する。
+    構成に必要なロールの人数が足りない場合、そのプレイヤーは待機メンバーとなる。
+    """
+    if len(players) < 5:
+        return [], players, 0.0
+
+    # --- ステップ1: 編成可能な最大チーム数を決定 ---
+    players_by_role: Dict[str, List[Player]] = {role: [] for role in ENTRY_LANES}
+    for p in players:
+        # エントリー時にロールが保証されている前提
+        players_by_role[p.role].append(p)
+
+    # 各ロールの人数をカウント
+    role_counts = {role: len(p_list) for role, p_list in players_by_role.items()}
+    
+    # 最も人数の少ないロールの数が、作れるチーム数の上限
+    if not role_counts or min(role_counts.values()) == 0:
+        # どのかのロールが0人ならチームは作れない
+        num_teams = 0
+    else:
+        num_teams = min(role_counts.values())
+
+    if num_teams == 0:
+        return [], players, 0.0
+
+    # --- ステップ2: チーム分け対象メンバーと待機メンバーを選別 ---
+    team_candidates = []
+    waiting_players = []
+
+    for role in ENTRY_LANES:
+        # 各ロールをMMRの高い順にソート
+        sorted_role_players = sorted(players_by_role[role], key=lambda p: p.mmr, reverse=True)
+        
+        # 上位N人（N=チーム数）をチーム分け対象に
+        team_candidates.extend(sorted_role_players[:num_teams])
+        # それ以外を待機メンバーに
+        waiting_players.extend(sorted_role_players[num_teams:])
+
+    # --- ステップ3: 初期チーム編成 ---
+    # team_candidatesを再度ロールごとに分類し、各チームに割り振る
+    candidates_by_role: Dict[str, List[Player]] = {role: [] for role in ENTRY_LANES}
+    for p in team_candidates:
+        candidates_by_role[p.role].append(p)
+
+    current_teams: List[List[Player]] = [[] for _ in range(num_teams)]
+    for role in ENTRY_LANES:
+        for i in range(num_teams):
+            # この時点で必ずプレイヤーはいるはず
+            player_to_assign = candidates_by_role[role].pop(0)
+            current_teams[i].append(player_to_assign)
+
+    # --- ステップ4: 焼きなまし法によるバランス調整（同ロールスワップ） ---
+    best_teams = [list(team) for team in current_teams]
+    best_score = calculate_multi_team_score(best_teams, team_candidates)
+    temp = INITIAL_TEMP
+
+    for _ in range(MAX_ITERATIONS):
+        if temp <= 0.01:
+            break
+
+        new_teams = [list(team) for team in current_teams]
+
+        if num_teams >= 2:
+            t1_idx, t2_idx = random.sample(range(num_teams), 2)
+            role_to_swap = random.choice(ENTRY_LANES)
+            p1_idx_in_team, p2_idx_in_team = -1, -1
+
+            for i, p in enumerate(new_teams[t1_idx]):
+                if p.role == role_to_swap:
+                    p1_idx_in_team = i
+                    break
+            for i, p in enumerate(new_teams[t2_idx]):
+                if p.role == role_to_swap:
+                    p2_idx_in_team = i
+                    break
+            
+            # インデックスが見つかった場合のみ交換
+            if p1_idx_in_team != -1 and p2_idx_in_team != -1:
+                p1 = new_teams[t1_idx][p1_idx_in_team]
+                p2 = new_teams[t2_idx][p2_idx_in_team]
+                new_teams[t1_idx][p1_idx_in_team], new_teams[t2_idx][p2_idx_in_team] = p2, p1
+
+        new_score = calculate_multi_team_score(new_teams, team_candidates)
+        current_score = calculate_multi_team_score(current_teams, team_candidates)
+        delta = new_score - current_score
+
+        if delta < 0 or random.random() < math.exp(-delta / temp):
+            current_teams = [list(team) for team in new_teams]
+            if new_score < best_score:
+                best_score = new_score
+                best_teams = [list(team) for team in new_teams]
+
+        temp *= COOLING_RATE
+        
+    return best_teams, waiting_players, best_score
 
 # ---------------- Discordボット本体 ----------------
 
