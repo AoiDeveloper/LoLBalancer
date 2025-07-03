@@ -2,7 +2,7 @@ from flask import Flask
 from threading import Thread
 
 import os
-port = os.env("PORT")
+port = os.getenv("PORT")
 app = Flask('')
 
 @app.route('/')
