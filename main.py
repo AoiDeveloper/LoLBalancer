@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple
 
 # keep_alive.py を利用している場合は、このファイルもプロジェクトに含めてください
-# from keep_alive import keep_alive
-# keep_alive()
+from keep_alive import keep_alive
+keep_alive()
 
 # ---------------- 定数・パラメータ設定 ----------------
 load_dotenv()
